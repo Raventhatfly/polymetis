@@ -2,8 +2,8 @@
 
 // This source code is licensed under the MIT license found in the
 // LICENSE file in the root directory of this source tree.
+#include "spdlog/spdlog.h"
 #include <chrono>
-#include <iostream>
 #include <numeric>
 #include <thread>
 
@@ -22,9 +22,6 @@
 
 #include <fstream>
 #include <sstream>
-
-#include <torch/jit.h>
-#include <torch/script.h>
 
 using grpc::Channel;
 using grpc::ClientContext;
@@ -81,8 +78,7 @@ public:
         times_taken.at(i % log_iters) = ms_taken;
       }
       if (ms_taken > 1.0) {
-        std::cout << "\n==== Warning: round trip time takes " << ms_taken
-                  << " ms! ====\n\n";
+        spdlog::warn("Round trip time takes {} ms!", ms_taken);
       }
 
       if (i > 0 && i % log_iters == 0) {
@@ -97,8 +93,8 @@ public:
         }
         float avg_time_taken = sum / log_iters;
 
-        std::cout << "max: " << max_time_taken << ", min: " << min_time_taken
-                  << ", avg: " << avg_time_taken << std::endl;
+        spdlog::info("max: {}, min: {}, avg: {}", max_time_taken,
+                     min_time_taken, avg_time_taken);
 
         if (max_time_taken > global_max) {
           global_max = max_time_taken;
@@ -109,8 +105,8 @@ public:
         int num_logs_so_far = i / log_iters;
         global_avg = ((num_logs_so_far - 1) * global_avg + avg_time_taken) /
                      (float)num_logs_so_far;
-        std::cout << "global max: " << global_max << ", min: " << global_min
-                  << ", avg: " << global_avg << std::endl;
+        spdlog::info("global max: {}, min: {}, avg: {}", global_max, global_min,
+                     global_avg);
       }
 
       std::this_thread::sleep_until(start + 1ms);
@@ -121,9 +117,12 @@ private:
   std::unique_ptr<PolymetisControllerServer::Stub> stub_;
   bool SendCommand(int num_dofs) {
     RobotState state_;
+    setTimestampToNow(state_.mutable_timestamp());
     for (int i = 0; i < num_dofs; i++) {
       state_.add_joint_positions(0.0);
       state_.add_joint_velocities(0.0);
+      state_.add_motor_torques_measured(0.0);
+      state_.add_motor_torques_external(0.0);
     }
 
     setTimestampToNow(state_.mutable_timestamp());
@@ -132,7 +131,7 @@ private:
     ClientContext context;
     Status status = stub_->ControlUpdate(&context, state_, &torque_command);
     if (!status.ok()) {
-      std::cout << "SendCommand failed." << std::endl;
+      spdlog::error("SendCommand failed: {}", status.error_code());
       return false;
     }
     return true;
@@ -158,8 +157,7 @@ void *RunClient(void *cfg_ptr) {
 
 int main(int argc, char *argv[]) {
   if (argc != 2) {
-    std::cout << "Usage: empty_statistics_client /path/to/cfg.yaml"
-              << std::endl;
+    spdlog::error("Usage: empty_statistics_client /path/to/cfg.yaml");
     return 1;
   }
   YAML::Node config = YAML::LoadFile(argv[1]);

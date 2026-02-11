@@ -1,5 +1,7 @@
 # Installation
 
+> We recommend [mamba](https://github.com/mamba-org/mamba) as a faster drop-in replacement for conda. After installing `mamba` (`conda install mamba -n base -c conda-forge`), simply substitute `mamba` for `conda` in all of the following instructions.
+
 ## Simple
 
 ### From Anaconda
@@ -15,8 +17,9 @@
 
 1. Install polymetis using conda. This should pull the latest successful build from `main` branch.
     ```bash
-    conda install -c fair-robotics -c conda-forge polymetis
+    conda install -c pytorch -c fair-robotics -c aihabitat -c conda-forge polymetis
     ```
+    > Note: We build the conda package with the [libfranka v0.9.0](https://github.com/frankaemika/libfranka/tree/0.9.0), which requires [Franka Control Interface (FCI) version >=4.2.1](https://frankaemika.github.io/docs/libfranka_changelog.html#id1). If you have a different version of FCI, consider building from source with the compatible version of libfranka (see below).
 
 ## For advanced users & developers
 
@@ -24,8 +27,8 @@
 
 1. Clone repo:
     ```bash
-    git clone git@github.com:facebookresearch/polymetis
-    cd polymetis
+    git clone git@github.com:facebookresearch/fairo
+    cd fairo/polymetis
     ```
 
 1. Create environment
@@ -42,22 +45,23 @@
 1. Build from source:
     - Optionally, build [libfranka](https://frankaemika.github.io/docs/libfranka.html) for use on Franka Panda hardware:
         ```bash
+        # Build libfranka
         ./scripts/build_libfranka.sh
+
+        # OPTIONAL: Build custom version of libfranka instead
+        ./scripts/build_libfranka.sh <version_tag_or_commit_hash>
         ```
-    - Optionally, install the CUDA-enabled version of our PyTorch build (by default, only the CPU version is enabled):
-        ```bash
-        conda install -c fair-robotics pytorch
-        ```
+    - Optionally, [install the CUDA-enabled version of PyTorch](https://pytorch.org/get-started/locally/) (by default, only the CPU version is enabled).
     - Build Polymetis from source:
         ```bash
         mkdir -p ./polymetis/build
         cd ./polymetis/build
 
-        cmake .. -DBUILD_FRANKA=[OFF/ON] -DBUILD_TESTS=[OFF/ON] -DBUILD_DOCS=[OFF/ON]
+        cmake .. -DCMAKE_BUILD_TYPE=Release -DBUILD_FRANKA=[OFF/ON] -DBUILD_TESTS=[OFF/ON] -DBUILD_DOCS=[OFF/ON]
         make -j
         ```
 
-5. Start developing! Remember to rebuild if modifying C++ source code.
+5. Start developing! Remember to rebuild if modifying C++ source code. When updating, you may need to do a `conda env update --file ./polymetis/environment.yml --prune` to update dependencies.
 
 ### From a local conda package
 
@@ -87,7 +91,9 @@ We rebuild a new conda package during CI on every pushed commit, and store it as
     - Install polymetis from the local channel:
         ```bash
         conda install -c file://$(eval pwd)/conda/channel \
+            -c pytorch \
             -c fair-robotics \
+            -c aihabitat \
             -c conda-forge \
             polymetis
         ```

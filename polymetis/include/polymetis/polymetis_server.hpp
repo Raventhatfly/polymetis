@@ -5,8 +5,9 @@
 #ifndef polymetis_SERVER_H
 #define polymetis_SERVER_H
 
+#include "spdlog/spdlog.h"
 #include <chrono>
-#include <iostream>
+#include <fstream>
 #include <mutex>
 #include <string>
 #include <unistd.h>
@@ -21,14 +22,14 @@
 #include "polymetis.grpc.pb.h"
 
 #include "polymetis/utils.h"
+#include "torch_server_ops.hpp"
 #include "yaml-cpp/yaml.h"
-
-#include <torch/script.h>
 
 #define MAX_CIRCULAR_BUFFER_SIZE 300000 // 5 minutes of data at 1kHz
 #define MAX_MODEL_BYTES 1048576         // 1 megabyte
 #define THRESHOLD_NS 1000000000         // 1s
 #define SPIN_INTERVAL_USEC 20000        // 0.02s (50hz)
+#define RT_LOW_PRIO 40
 
 using grpc::Server;
 using grpc::ServerBuilder;
@@ -37,6 +38,7 @@ using grpc::ServerReader;
 using grpc::ServerReaderWriter;
 using grpc::ServerWriter;
 using grpc::Status;
+using grpc::StatusCode;
 
 /**
 TODO
@@ -53,13 +55,12 @@ enum ControllerStatus {
 TODO
 */
 struct CustomControllerContext {
-  ServerContext *server_context;
   uint episode_begin = -1;
   uint episode_end = -1;
   uint timestep = 0;
   ControllerStatus status = UNINITIALIZED;
   std::mutex controller_mtx;
-  torch::jit::script::Module custom_controller;
+  std::unique_ptr<TorchScriptedController> custom_controller;
 };
 
 /**
@@ -68,7 +69,7 @@ TODO
 struct RobotClientContext {
   long int last_update_ns = 0;
   RobotClientMetadata metadata;
-  torch::jit::script::Module default_controller;
+  TorchScriptedController *default_controller = nullptr;
 };
 
 /**
@@ -88,6 +89,8 @@ public:
   bool validRobotContext();
 
   void resetControllerContext();
+
+  int setThreadPriority(int prio);
 
   // Robot client methods
 
@@ -163,14 +166,6 @@ private:
   int num_dofs_;
   long int threshold_ns_ = THRESHOLD_NS;
 
-  torch::Tensor timestamp_;
-  torch::Tensor joint_pos_;
-  torch::Tensor joint_vel_;
-  c10::Dict<std::string, torch::Tensor> state_dict_;
-  std::vector<torch::jit::IValue> input_;
-  std::vector<torch::jit::IValue> empty_input_;
-  std::vector<torch::jit::IValue> param_dict_input_;
-
   std::mutex service_mtx_;
 
   CircularBuffer<RobotState> robot_state_buffer_ =
@@ -178,6 +173,8 @@ private:
 
   CustomControllerContext custom_controller_context_;
   RobotClientContext robot_client_context_;
+
+  std::unique_ptr<TorchRobotState> torch_robot_state_;
 };
 
 #endif

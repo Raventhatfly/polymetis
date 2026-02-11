@@ -8,6 +8,7 @@ import io
 
 import torch
 
+import polymetis
 import polymetis_pb2
 from polymetis.utils.data_dir import get_full_path_to_urdf
 from torchcontrol.policies.default_controller import DefaultController
@@ -20,13 +21,13 @@ class RobotModelConfig:
     robot_description_path: str
     controlled_joints: List[float]
     num_dofs: int
-    ee_link_idx: int
-    ee_joint_name: str
     rest_pose: List[float]
     joint_limits_low: List[float]
     joint_limits_high: List[float]
     joint_damping: List[float]
     torque_limits: List[float]
+    ee_link_idx: int = None
+    ee_link_name: str = None
 
 
 @dataclass
@@ -35,6 +36,8 @@ class RobotClientMetadataConfig:
 
     default_Kq: List[float]
     default_Kqd: List[float]
+    default_Kx: List[float]
+    default_Kxd: List[float]
     hz: int
     robot_model: RobotModelConfig
 
@@ -51,7 +54,11 @@ class RobotClientMetadata:
     Args:
         default_Kq: Default position gains for the robot.
 
-        default_Kdq: Default velocity gains for the robot.
+        default_Kqd: Default velocity gains for the robot.
+
+        default_Kx: Default pose positional gains for the robot.
+
+        default_Kxd: Default pose velocity gains for the robot.
 
         hz: Frequency the robot is running at.
 
@@ -64,6 +71,8 @@ class RobotClientMetadata:
         self,
         default_Kq: List[float],
         default_Kqd: List[float],
+        default_Kx: List[float],
+        default_Kxd: List[float],
         hz: int,
         robot_model_cfg: RobotModelConfig,
     ):
@@ -78,12 +87,16 @@ class RobotClientMetadata:
         robot_client_metadata = polymetis_pb2.RobotClientMetadata()
         robot_client_metadata.hz = hz
         robot_client_metadata.dof = robot_model_cfg.num_dofs
-        robot_client_metadata.ee_joint_name = robot_model_cfg.ee_joint_name
-        robot_client_metadata.ee_link_idx = robot_model_cfg.ee_link_idx
+        if "ee_link_name" in robot_model_cfg:
+            robot_client_metadata.ee_link_name = robot_model_cfg.ee_link_name
+        if "ee_link_idx" in robot_model_cfg:
+            robot_client_metadata.ee_link_idx = robot_model_cfg.ee_link_idx
 
         # Set gains as shared metadata
         robot_client_metadata.default_Kq[:] = default_Kq
         robot_client_metadata.default_Kqd[:] = default_Kqd
+        robot_client_metadata.default_Kx[:] = default_Kx
+        robot_client_metadata.default_Kxd[:] = default_Kxd
         robot_client_metadata.rest_pose[:] = robot_model_cfg.rest_pose
 
         # Set default controller for controller manager server
@@ -93,6 +106,9 @@ class RobotClientMetadata:
         full_urdf_path = get_full_path_to_urdf(robot_model_cfg.robot_description_path)
         with open(full_urdf_path, "r") as file:
             robot_client_metadata.urdf_file = file.read()
+
+        # Set version
+        robot_client_metadata.polymetis_version = polymetis.__version__
 
         self.metadata_proto = robot_client_metadata
 
@@ -106,3 +122,8 @@ class RobotClientMetadata:
     def get_proto(self):
         """Returns the underlying protobuf message."""
         return self.metadata_proto
+
+
+class EmptyRobotClientMetadata(RobotClientMetadata):
+    def __init__(self):
+        self.metadata_proto = polymetis_pb2.RobotClientMetadata()

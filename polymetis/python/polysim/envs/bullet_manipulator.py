@@ -4,7 +4,7 @@
 # LICENSE file in the root directory of this source tree.
 from typing import List
 import logging
-from os import path
+import os
 
 import numpy as np
 import pybullet
@@ -22,13 +22,14 @@ log = logging.getLogger(__name__)
 class BulletManipulatorEnv(AbstractControlledEnv):
     """A manipulator environment using PyBullet.
 
-    robot_model_cfg: A Hydra configuration file containing information needed for the
-                     robot model, e.g. URDF. For an example, see
-                     `polymetis/conf/robot_model/franka_panda.yaml`
+    Args:
+        robot_model_cfg: A Hydra configuration file containing information needed for the
+                        robot model, e.g. URDF. For an example, see
+                        `polymetis/conf/robot_model/franka_panda.yaml`
 
-    gui: Whether to initialize the PyBullet simulation in GUI mode.
+        gui: Whether to initialize the PyBullet simulation in GUI mode.
 
-    use_grav_comp: If True, adds gravity compensation torques to the input torques.
+        use_grav_comp: If True, adds gravity compensation torques to the input torques.
     """
 
     def __init__(
@@ -36,6 +37,8 @@ class BulletManipulatorEnv(AbstractControlledEnv):
         robot_model_cfg: DictConfig,
         gui: bool,
         use_grav_comp: bool = True,
+        gravity: float = 9.81,
+        extract_config_from_rdf=False,
     ):
         self.robot_model_cfg = robot_model_cfg
         self.robot_description_path = get_full_path_to_urdf(
@@ -47,12 +50,12 @@ class BulletManipulatorEnv(AbstractControlledEnv):
         self.n_dofs = self.robot_model_cfg.num_dofs
         assert len(self.controlled_joints) == self.n_dofs
         self.ee_link_idx = self.robot_model_cfg.ee_link_idx
-        self.ee_joint_name = self.robot_model_cfg.ee_joint_name
+        self.ee_link_name = self.robot_model_cfg.ee_link_name
         self.rest_pose = self.robot_model_cfg.rest_pose
         self.joint_limits_low = np.array(self.robot_model_cfg.joint_limits_low)
         self.joint_limits_high = np.array(self.robot_model_cfg.joint_limits_high)
         if self.robot_model_cfg.joint_damping is None:
-            self.joint_damping = np.zeros(self.n_dofs)
+            self.joint_damping = None
         else:
             self.joint_damping = np.array(self.robot_model_cfg.joint_damping)
         if self.robot_model_cfg.torque_limits is None:
@@ -67,10 +70,33 @@ class BulletManipulatorEnv(AbstractControlledEnv):
         else:
             self.sim = BulletClient(connection_mode=pybullet.DIRECT)
 
+        self.sim.setGravity(0, 0, -gravity)
+
         # Load robot
-        self.world_id, self.robot_id = self.load_robot_description_from_urdf(
-            self.robot_description_path, self.sim
-        )
+        ext = os.path.splitext(self.robot_description_path)[-1][1:]
+        if ext == "urdf":
+            self.world_id, self.robot_id = self.load_robot_description_from_urdf(
+                self.robot_description_path, self.sim
+            )
+        elif ext == "sdf":
+            self.world_id, self.robot_id = self.load_robot_description_from_sdf(
+                self.robot_description_path, self.sim
+            )
+        else:
+            raise Exception(f"Unknown robot definition extension {ext}!")
+
+        if extract_config_from_rdf:
+            log.info("************ CONFIG INFO ************")
+            num_joints = self.sim.getNumJoints(self.robot_id)
+            for i in range(num_joints):
+                # joint_info tuple structure described in PyBullet docs:
+                # https://docs.google.com/document/d/10sXEhzFRSnvFcl3XxNGhnD4N2SedqwdAvK3dsihxVUA/edit#heading=h.la294ocbo43o
+                joint_info = self.sim.getJointInfo(self.robot_id, i)
+                log.info("Joint {}".format(joint_info[1].decode("utf-8")))  # jointName
+                log.info("\tLimit low : {}".format(joint_info[8]))  # jointLowerLimit
+                log.info("\tLimit High: {}".format(joint_info[9]))  # jointUpperLimit
+                log.info("\tJoint Damping: {}".format(joint_info[6]))  # jointDamping
+            log.info("*************************************")
 
         # Enable torque control
         self.sim.setJointMotorControlArray(
@@ -96,6 +122,18 @@ class BulletManipulatorEnv(AbstractControlledEnv):
             useFixedBase=True,
             flags=pybullet.URDF_USE_INERTIA_FROM_FILE,
         )
+
+        pybullet.setAdditionalSearchPath(pybullet_data.getDataPath())
+        world_id = pybullet.loadURDF("plane.urdf", [0.0, 0.0, 0.0])
+        return world_id, robot_id
+
+    @staticmethod
+    def load_robot_description_from_sdf(abs_urdf_path: str, sim: BulletClient):
+        """Loads a SDF file into the simulation."""
+        log.info("loading sdf file: {}".format(abs_urdf_path))
+        robot_id = sim.loadSDF(
+            abs_urdf_path,
+        )[0]
 
         pybullet.setAdditionalSearchPath(pybullet_data.getDataPath())
         world_id = pybullet.loadURDF("plane.urdf", [0.0, 0.0, 0.0])
@@ -138,7 +176,7 @@ class BulletManipulatorEnv(AbstractControlledEnv):
         return self.get_current_joint_pos_vel()[1]
 
     def get_current_joint_torques(self):
-        """Returns a set of the previous torques that were just computed and applied."""
+        """Returns torques: [inputted, clipped, added with gravity compensation, and measured externally]"""
         return (
             self.prev_torques_commanded,
             self.prev_torques_applied,
@@ -227,15 +265,17 @@ class BulletManipulatorEnv(AbstractControlledEnv):
             target_position = target_position.tolist()
         if isinstance(target_orientation, np.ndarray):
             target_orientation = target_orientation.tolist()
-        joint_des_pos = self.sim.calculateInverseKinematics(
-            self.robot_id,
-            self.ee_link_idx,
-            target_position,
+        ik_kwargs = dict(
+            bodyUniqueId=self.robot_id,
+            endEffectorLinkIndex=self.ee_link_idx,
+            targetPosition=target_position,
             targetOrientation=target_orientation,
             upperLimits=self.joint_limits_high.tolist(),
             lowerLimits=self.joint_limits_low.tolist(),
-            jointDamping=self.joint_damping.tolist(),
         )
+        if self.joint_damping is not None:
+            ik_kwargs["joint_damping"] = self.joint_damping.tolist()
+        joint_des_pos = self.sim.calculateInverseKinematics(**ik_kwargs)
         return np.array(joint_des_pos)
 
     def compute_inverse_dynamics(
@@ -247,3 +287,36 @@ class BulletManipulatorEnv(AbstractControlledEnv):
             self.robot_id, list(joint_pos), list(joint_vel), list(joint_acc)
         )
         return np.asarray(torques)
+
+    def set_robot_state(self, robot_state):
+        req_joint_pos = robot_state.joint_positions
+        req_joint_vel = robot_state.joint_velocities
+        assert len(req_joint_pos) == len(req_joint_vel) == self.n_dofs
+        for i in range(self.n_dofs):
+            self.sim.resetJointState(
+                bodyUniqueId=self.robot_id,
+                jointIndex=i,
+                targetValue=req_joint_pos[i],
+                targetVelocity=req_joint_vel[i],
+            )
+
+        grav_comp_torques = self.compute_inverse_dynamics(
+            joint_pos=req_joint_pos,
+            joint_vel=[0] * self.n_dofs,
+            joint_acc=[0] * self.n_dofs,
+        )
+
+        # bug in pybullet requires many steps after reset so that subsequent forward sim calls work correctly
+        for _ in range(100):
+            self.sim.setJointMotorControlArray(
+                bodyIndex=self.robot_id,
+                jointIndices=self.controlled_joints,
+                controlMode=pybullet.TORQUE_CONTROL,
+                forces=grav_comp_torques,
+            )
+            self.sim.stepSimulation()
+
+        joint_state = self.sim.getJointStates(
+            bodyUniqueId=self.robot_id,
+            jointIndices=self.controlled_joints,
+        )

@@ -38,6 +38,7 @@ breathe_default_project = "polymetis_cpp"
 # extensions coming with Sphinx (named 'sphinx.ext.*') or your custom
 # ones.
 extensions = [
+    "sphinx_copybutton",
     "sphinx.ext.autodoc",
     "sphinx.ext.coverage",
     "sphinx.ext.napoleon",
@@ -61,6 +62,9 @@ exclude_patterns = ["_build", "Thumbs.db", ".DS_Store"]
 #
 # html_theme = "alabaster"
 html_theme = "sphinx_book_theme"
+
+html_favicon = "img/polymetis-favicon.svg"
+html_logo = "img/polymetis-logo.svg"
 
 # Add any paths that contain custom static files (such as style sheets) here,
 # relative to this directory. They are copied after the builtin static files,

@@ -5,7 +5,20 @@
 cmake_minimum_required(VERSION 3.14)
 project(polymetis)
 
-SET(CMAKE_CXX_FLAGS "-std=c++14 -O3")
+set(CMAKE_CXX_FLAGS "-std=c++17")
+set(CMAKE_CXX_FLAGS_RELEASE "-O3")
+
+add_library(protobuf::libprotobuf UNKNOWN IMPORTED)
+set_target_properties(protobuf::libprotobuf PROPERTIES
+  INTERFACE_INCLUDE_DIRECTORIES "$ENV{CONDA_PREFIX}/include/google/protobuf/")
+set_target_properties(protobuf::libprotobuf PROPERTIES
+  IMPORTED_LOCATION "$ENV{CONDA_PREFIX}/lib/libprotobuf.so")
+set_property(TARGET protobuf::libprotobuf APPEND PROPERTY
+  INTERFACE_COMPILE_FEATURES cxx_std_11
+)
+
+add_subdirectory("torch_isolation/")
+
 add_definitions(-D_GLIBCXX_USE_CXX11_ABI=1)
 
 if(DEFINED ENV{PREFIX})
@@ -21,17 +34,6 @@ find_package(yaml-cpp REQUIRED)
 ### eigen3
 find_package(Eigen3 REQUIRED)
 
-# Find Torch
-execute_process (
-    COMMAND bash -c "python -c 'from distutils.sysconfig import get_python_lib; print(get_python_lib())' | tr -d '\n'"
-    OUTPUT_VARIABLE site_packages_path
-)
-set(Torch_DIR ${site_packages_path}/torch/share/cmake/Torch/)
-find_package(Torch REQUIRED)
-
-# Find Protobuf
-set(_PROTOBUF_LIBPROTOBUF $ENV{CONDA_PREFIX}/lib/libprotobuf.so)
-set(Protobuf_FOUND ON)
 
 # Find protoc
 set(_PROTOBUF_PROTOC $ENV{CONDA_PREFIX}/bin/protoc)
@@ -42,13 +44,14 @@ find_package(gRPC REQUIRED)
 set(_REFLECTION gRPC::grpc++_reflection)
 set(_GRPC_GRPCPP gRPC::grpc++)
 
-# Find Pinocchio
-set(pinocchio_DIR $ENV{CONDA_PREFIX}/lib/cmake/pinocchio)
-find_package(pinocchio REQUIRED)
-
 # Find gRPC plugins
 find_program(_GRPC_CPP_PLUGIN_EXECUTABLE $ENV{CONDA_PREFIX}/bin/grpc_cpp_plugin)
 find_program(_GRPC_PYTHON_PLUGIN_EXECUTABLE $ENV{CONDA_PREFIX}/bin/grpc_python_plugin)
+
+# Find spdlog (C++ logger)
+if(NOT TARGET spdlog)
+    find_package(spdlog REQUIRED)
+endif()
 
 # Define proto directories
 get_filename_component(loader_proto "protos/polymetis.proto" ABSOLUTE)
@@ -84,7 +87,7 @@ add_custom_command(
 )
 
 add_library(
-    generated_grpc_protos 
+    generated_grpc_protos
       ${loader_proto_srcs}
       ${loader_proto_hdrs}
       ${loader_grpc_srcs}
@@ -100,25 +103,10 @@ include_directories(
     include
     "${CMAKE_CURRENT_BINARY_DIR}"
     "$ENV{CONDA_PREFIX}/include/"
-    ${TORCH_INCLUDE_DIRS}
     ${EIGEN3_INCLUDE_DIR}
-    ${pinocchio_INCLUDE_DIRS} 
-)
-
-# Add Torchscript Pinocchio wrapper
-add_library(torchscript_pinocchio SHARED
-    src/torchscript_operators/pinocchio.cpp
-)
-target_link_libraries(torchscript_pinocchio
-    ${pinocchio_LIBRARIES}
-    ${TORCH_LIBRARIES}
-)
-
-add_library(torchrot SHARED
-    src/torchscript_operators/rotations.cpp
-)
-target_link_libraries(torchrot
-    ${TORCH_LIBRARIES}
+    ${pinocchio_INCLUDE_DIRS}
+    "${CMAKE_CURRENT_SOURCE_DIR}/torch_isolation/include"
+    "${CMAKE_CURRENT_SOURCE_DIR}/torch_isolation/pinocchio_isolation/include"
 )
 
 # Add server
@@ -126,26 +114,69 @@ add_library(polymetis_server "src/polymetis_server.cpp")
 
 target_link_libraries(polymetis_server
     generated_grpc_protos
-    ${TORCH_LIBRARIES}
     yaml-cpp
-    torchscript_pinocchio
-    torchrot
+    spdlog::spdlog
 )
 target_link_libraries(polymetis_server -Wl,--no-as-needed torchscript_pinocchio)
 target_link_libraries(polymetis_server -Wl,--no-as-needed torchrot)
+target_link_libraries(polymetis_server -Wl,--no-as-needed torch_server_ops)
 
 add_executable(run_server "src/run_server.cpp")
-target_link_libraries(run_server polymetis_server -Wl,--no-as-needed torchscript_pinocchio)
-target_link_libraries(run_server polymetis_server -Wl,--no-as-needed torchrot)
+target_link_libraries(run_server polymetis_server)
 
 # Add test client
 add_executable(empty_statistics_client "src/clients/empty_statistics_client.cpp"
 )
 target_link_libraries(empty_statistics_client
     generated_grpc_protos
-    ${TORCH_LIBRARIES}
     yaml-cpp
+    spdlog::spdlog
 )
+
+if(BUILD_ALLEGRO)
+  add_library(allegro_hand
+    src/clients/allegro_hand_client/allegro_hand.cpp
+    src/clients/allegro_hand_client/event_watcher.cpp
+    src/clients/allegro_hand_client/pcan_netdev_interface.cpp)
+
+  target_link_libraries(allegro_hand
+    yaml-cpp
+    spdlog::spdlog
+    )
+
+  add_executable(allegro_hand_client
+    src/clients/allegro_hand_client/allegro_hand_client.cpp
+    )
+
+  target_link_libraries(allegro_hand_client
+    allegro_hand
+    generated_grpc_protos
+    )
+
+  if(BUILD_TESTS)
+    find_package(Git REQUIRED QUIET)
+    execute_process(COMMAND ${GIT_EXECUTABLE} submodule update --init --recursive -- tests/cpp/fake_clock
+      WORKING_DIRECTORY ${PROJECT_SOURCE_DIR}
+      COMMAND_ERROR_IS_FATAL ANY)
+
+    add_library(fake_clock tests/cpp/fake_clock/fake_clock.cc)
+    add_executable(test_allegro_hand_client
+      tests/cpp/test_allegro_hand_client.cpp
+      )
+
+    target_include_directories(test_allegro_hand_client PRIVATE
+      src/clients/allegro_hand_client
+      ${gtest_SOURCE_DIR}/include ${gtest_SOURCE_DIR}
+      )
+
+    target_link_libraries(test_allegro_hand_client
+      allegro_hand
+      fake_clock
+      gtest
+      gtest_main
+      )
+  endif()
+endif()
 
 if(BUILD_FRANKA)
   if(NOT DEFINED Franka_DIR)
@@ -158,7 +189,7 @@ if(BUILD_FRANKA)
     ${Franka_INCLUDE_DIRS}
   )
 
-  # Add Franka client
+  # Add Franka clients
   add_executable(franka_panda_client
       src/clients/franka_panda_client/franka_panda_client.cpp
   )
@@ -166,6 +197,17 @@ if(BUILD_FRANKA)
       generated_grpc_protos
       Franka::Franka
       yaml-cpp
+      spdlog::spdlog
+  )
+
+  add_executable(franka_hand_client 
+      src/clients/franka_panda_client/franka_hand_client.cpp
+  )
+  target_link_libraries(franka_hand_client
+      generated_grpc_protos
+      Franka::Franka
+      yaml-cpp
+      spdlog::spdlog
   )
 endif()
 

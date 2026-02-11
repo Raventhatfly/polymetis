@@ -107,10 +107,11 @@ TEST_F(ServiceTest, SetController) {
   stub_.get()->InitRobotClient(new grpc::ClientContext, metadata_, new Empty);
 
   // Get interval before sending policy
-  LogInterval interval1;
-  stub_.get()->GetEpisodeInterval(new grpc::ClientContext, empty_, &interval1);
-  EXPECT_EQ(interval1.start(), -1);
-  EXPECT_EQ(interval1.end(), -1);
+  LogInterval interval_init;
+  stub_.get()->GetEpisodeInterval(new grpc::ClientContext, empty_,
+                                  &interval_init);
+  EXPECT_EQ(interval_init.start(), -1);
+  EXPECT_EQ(interval_init.end(), -1);
 
   // Start thread that runs controller for 2 steps then terminate
   std::mutex terminate_mtx;
@@ -124,7 +125,7 @@ TEST_F(ServiceTest, SetController) {
                                       dummy_robot_state_, new TorqueCommand)
                       .ok());
 
-      if (i == 1) {
+      if (i == 2) {
         terminate_mtx.unlock();
         usleep(100000);
       }
@@ -140,30 +141,38 @@ TEST_F(ServiceTest, SetController) {
   writer->WritesDone();
   ASSERT_TRUE((writer->Finish()).ok());
 
+  LogInterval interval_executing;
+  stub_.get()->GetEpisodeInterval(new grpc::ClientContext, empty_,
+                                  &interval_executing);
+  EXPECT_EQ(interval_executing.start(), 0);
+  EXPECT_EQ(interval_executing.end(), -1);
+
   // Terminate controller
   terminate_mtx.lock();
-  LogInterval interval2;
-  EXPECT_TRUE(
-      stub_.get()
-          ->TerminateController(new grpc::ClientContext, empty_, &interval2)
-          .ok());
+  LogInterval interval_terminated;
+  EXPECT_TRUE(stub_.get()
+                  ->TerminateController(new grpc::ClientContext, empty_,
+                                        &interval_terminated)
+                  .ok());
   robot_client_thread.join();
 
-  EXPECT_EQ(interval2.start(), 0);
-  EXPECT_EQ(interval2.end(), 2);
+  EXPECT_EQ(interval_terminated.start(), 0);
+  EXPECT_EQ(interval_terminated.end(), 2);
 
   // Get interval
-  LogInterval interval3;
-  stub_.get()->GetEpisodeInterval(new grpc::ClientContext, empty_, &interval3);
-  EXPECT_EQ(interval3.start(), 0);
-  EXPECT_EQ(interval3.end(), 2);
+  LogInterval interval_terminated_repeated;
+  stub_.get()->GetEpisodeInterval(new grpc::ClientContext, empty_,
+                                  &interval_terminated_repeated);
+  EXPECT_EQ(interval_terminated_repeated.start(), 0);
+  EXPECT_EQ(interval_terminated_repeated.end(), 2);
 }
 
-TEST_F(ServiceTest, TestServiceLock) {
+TEST_F(ServiceTest, TestInvalidRequests) {
   // Init
   stub_.get()->InitRobotClient(new grpc::ClientContext, metadata_, new Empty);
 
-  // Send invalid controller
+  // Send invalid controller, expect fail while server continues to run default
+  // controller
   auto writer =
       stub_.get()->SetController(new grpc::ClientContext, new LogInterval);
   ControllerChunk chunk;
@@ -172,10 +181,18 @@ TEST_F(ServiceTest, TestServiceLock) {
   writer->WritesDone();
   ASSERT_FALSE((writer->Finish()).ok());
 
-  // Call termination and make sure it runs
-  EXPECT_TRUE(stub_.get()
-                  ->TerminateController(new grpc::ClientContext, empty_,
-                                        new LogInterval)
+  // Call termination => expect fail since no custom controller is being run
+  ASSERT_FALSE(stub_.get()
+                   ->TerminateController(new grpc::ClientContext, empty_,
+                                         new LogInterval)
+                   .ok());
+
+  // Send valid ControlUpdate request => expect server is still functioning
+  // normally
+  TorqueCommand torque_command;
+  ASSERT_TRUE(stub_.get()
+                  ->ControlUpdate(new grpc::ClientContext, dummy_robot_state_,
+                                  &torque_command)
                   .ok());
 }
 
@@ -183,7 +200,7 @@ int main(int argc, char **argv) {
   ::testing::InitGoogleTest(&argc, argv);
 
   if (argc != 2) {
-    std::cout << "Usage: ./test_server /path/to/cfg.yaml" << std::endl;
+    spdlog::error("Usage: ./test_server /path/to/cfg.yaml");
     return 1;
   }
   YAML::Node config = YAML::LoadFile(argv[1]);
@@ -201,6 +218,8 @@ int main(int argc, char **argv) {
   for (int i = 0; i < metadata_.dof(); i++) {
     dummy_robot_state_.add_joint_positions(0);
     dummy_robot_state_.add_joint_velocities(0);
+    dummy_robot_state_.add_motor_torques_measured(0);
+    dummy_robot_state_.add_motor_torques_external(0);
   }
 
   return RUN_ALL_TESTS();

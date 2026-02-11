@@ -5,28 +5,25 @@
 from __future__ import annotations
 
 import os
-import subprocess
-
 import torch
+from polymetis.utils.data_dir import PKG_ROOT_DIR
 
 
-try:
-    torch.ops.load_library(f"{os.environ['CONDA_PREFIX']}/lib/libtorchrot.so")
-except OSError:
-    print(
-        "Warning: Failed to load 'libtorchrot.so' from CONDA_PREFIX, loading from default build directory 'polymetis/build' instead..."
-    )
-    project_root_dir = (
-        subprocess.run(["git", "rev-parse", "--show-toplevel"], stdout=subprocess.PIPE)
-        .stdout.strip()
-        .decode("ascii")
-    )
-    torch.ops.load_library(
-        os.path.join(
-            project_root_dir,
-            "polymetis/build/libtorchrot.so",
-        )
-    )
+_ROT_LIB = "libtorchrot.so"
+_rot_search = []
+if "CONDA_PREFIX" in os.environ:
+    _rot_search.append(os.path.join(os.environ["CONDA_PREFIX"], "lib", _ROT_LIB))
+_rot_search.append(os.path.abspath(os.path.join(PKG_ROOT_DIR, "../../build/torch_isolation", _ROT_LIB)))
+_rot_search.append(os.path.abspath(os.path.join(PKG_ROOT_DIR, "../../torch_isolation/build", _ROT_LIB)))
+
+_rot_loaded = False
+for _p in _rot_search:
+    if os.path.isfile(_p):
+        torch.ops.load_library(_p)
+        _rot_loaded = True
+        break
+if not _rot_loaded:
+    raise OSError(f"Could not find {_ROT_LIB} in any of: {_rot_search}")
 
 functional = torch.ops.torchrot
 
